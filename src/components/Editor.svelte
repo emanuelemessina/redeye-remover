@@ -3,7 +3,7 @@
   import { correctedPatch } from '../core/correct';
   import { detectRedEyes } from '../core/detect';
   import { regionFromTap, type KnownIris } from '../core/manual';
-  import { DEFAULT_PARAMS, type CorrectionParams, type EyeRegion } from '../core/types';
+  import { DEFAULT_PARAMS, EYE_COLORS, type CorrectionParams, type EyeColor, type EyeRegion } from '../core/types';
   import { t } from '../lib/i18n';
   import { displayScale, type Photo } from '../lib/photo';
   import { canSaveInPlace, renderFile, saveCopy, saveInPlace } from '../lib/save';
@@ -143,6 +143,7 @@
       if (abort.signal.aborted) return;
       irises = res.eyes.map((e) => ({ x: e.x, y: e.y, irisR: e.irisR }));
       if (!regions.length) regions = res.regions;
+      remember(res.regions);
       showToast(res.regions.length ? t.foundEyes(res.regions.length) : t.noneFound);
       if (res.regions.length) dirty = true;
     } catch (e) {
@@ -227,9 +228,9 @@
     } else if (hit) {
       const r = regions.find((x) => x.id === hit.id)!;
       selectedId = hit.id;
-      gesture = { kind: 'move', id: hit.id, sx: p.x, sy: p.y, cx: r.cx, cy: r.cy, moved: false, t0: performance.now() };
+      gesture = { kind: 'move', id: hit.id, sx: p.x, sy: p.y, cx: r.cx, cy: r.cy, moved: false, t0: e.timeStamp };
     } else {
-      gesture = { kind: 'pan', sx: p.x, sy: p.y, tx, ty, moved: false, t0: performance.now() };
+      gesture = { kind: 'pan', sx: p.x, sy: p.y, tx, ty, moved: false, t0: e.timeStamp };
     }
   }
 
@@ -300,7 +301,8 @@
     }
     gesture = null;
     if (!g) return;
-    if (g.kind === 'pan' && !g.moved && performance.now() - g.t0 < 600) tap(toImage(p));
+    // Event timestamps measure the real press, even if the page was briefly busy.
+    if (g.kind === 'pan' && !g.moved && e.timeStamp - g.t0 < 800) tap(toImage(p));
   }
 
   function tap(ip: { x: number; y: number }) {
@@ -311,6 +313,7 @@
     }
     snapshot();
     const r = regionFromTap(photo.rgba, ip.x, ip.y, 24 / scale, irises);
+    remember([r]);
     regions = [...regions, r];
     selectedId = r.id;
     scheduleRender();
@@ -323,9 +326,35 @@
   }
 
   // ---- editing selected region ----
-  function setParam(k: keyof CorrectionParams, v: number) {
+  type NumParam = Exclude<keyof CorrectionParams, 'eyeColor'>;
+  function setParam(k: NumParam, v: number) {
     if (!selected) return;
     selected.params[k] = v;
+    scheduleRender();
+  }
+  // Starting settings of each eye, for "Reset".
+  const initial = new Map<string, { params: CorrectionParams; rx: number; ry: number }>();
+  function remember(list: EyeRegion[]) {
+    for (const r of list) if (!initial.has(r.id)) initial.set(r.id, { params: { ...r.params }, rx: r.rx, ry: r.ry });
+  }
+  const colorChoices: { id: EyeColor; css: string }[] = [
+    { id: 'natural', css: 'conic-gradient(#7a5236, #5b7a52, #5a7aa0, #7a5236)' },
+    ...(Object.entries(EYE_COLORS) as [EyeColor, number[]][]).map(([id, c]) => ({ id, css: `rgb(${c.join(',')})` })),
+  ];
+  function setEyeColor(c: EyeColor) {
+    if (!selected) return;
+    snapshot();
+    // A circle that is all pupil has no iris to colour: open up an iris ring.
+    if (c !== 'natural' && selected.params.pupil > 0.85) {
+      const grow = selected.params.pupil / 0.45;
+      selected.rx = Math.min(minDim * 0.2, selected.rx * grow);
+      selected.ry = Math.min(minDim * 0.2, selected.ry * grow);
+      selected.params.pupil = 0.45;
+    } else if (c !== 'natural' && selected.params.pupil > 0.5) {
+      // Leave room for the iris colour to show.
+      selected.params.pupil = 0.45;
+    }
+    selected.params.eyeColor = c;
     scheduleRender();
   }
   // Size slider is logarithmic: small pupils need fine control.
@@ -348,7 +377,12 @@
   function resetSelected() {
     if (!selected) return;
     snapshot();
-    selected.params = { ...DEFAULT_PARAMS };
+    const init = initial.get(selected.id);
+    selected.params = { ...(init?.params ?? DEFAULT_PARAMS) };
+    if (init) {
+      selected.rx = init.rx;
+      selected.ry = init.ry;
+    }
     scheduleRender();
   }
 
@@ -435,6 +469,9 @@
             {@const gap = ringW * (sel ? 2 : 1)}
             <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke="rgba(0,0,0,0.5)" stroke-width={ringW * (sel ? 2.6 : 1.6)} />
             <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke={sel ? '#fff' : 'rgba(255,255,255,0.8)'} stroke-width={ringW * (sel ? 1.4 : 0.7)} />
+            {#if sel && r.params.pupil < 0.98}
+              <ellipse cx={r.cx} cy={r.cy} rx={r.rx * r.params.pupil} ry={r.ry * r.params.pupil} fill="none" stroke="rgba(255,255,255,0.7)" stroke-width={ringW * 0.8} stroke-dasharray="{ringW * 3} {ringW * 3}" />
+            {/if}
             {#if sel}
               {@const h = handleOf(r)}
               <circle cx={h.x} cy={h.y} r={8 / scale} fill="#fff" stroke="rgba(0,0,0,0.6)" stroke-width={ringW} />
@@ -471,19 +508,44 @@
         <strong>{t.adjustEye}</strong>
         <button class="text strong" onclick={() => (selectedId = null)}>{t.done}</button>
       </div>
-      <div class="sliders" onpointerdown={snapshot} role="group">
-        <label><span>{t.size}</span>
-          <input type="range" min="0" max="1" step="0.001" value={sizeToSlider(selected.rx)} oninput={(e) => setSize(+e.currentTarget.value)} />
-        </label>
-        <label><span>{t.darkness}</span>
-          <input type="range" min="0" max="1" step="0.01" value={selected.params.darkness} oninput={(e) => setParam('darkness', +e.currentTarget.value)} />
-        </label>
-        <label><span>{t.strength}</span>
-          <input type="range" min="0" max="1" step="0.01" value={selected.params.strength} oninput={(e) => setParam('strength', +e.currentTarget.value)} />
-        </label>
-        <label><span>{t.feather}</span>
-          <input type="range" min="0" max="0.95" step="0.01" value={selected.params.feather} oninput={(e) => setParam('feather', +e.currentTarget.value)} />
-        </label>
+      <div class="scroll">
+        <div class="colors" role="radiogroup" aria-label={t.eyeColor}>
+          <span class="colors-label">{t.eyeColor}: <b>{t.colors[selected.params.eyeColor]}</b></span>
+          <div class="chips">
+            {#each colorChoices as c (c.id)}
+              <button
+                class="chip"
+                class:on={selected.params.eyeColor === c.id}
+                style="background:{c.css}"
+                role="radio"
+                aria-checked={selected.params.eyeColor === c.id}
+                aria-label={t.colors[c.id]}
+                title={t.colors[c.id]}
+                onclick={() => setEyeColor(c.id)}
+              ></button>
+            {/each}
+          </div>
+        </div>
+        <div class="sliders" onpointerdown={snapshot} role="group">
+          <label><span>{t.size}</span>
+            <input type="range" min="0" max="1" step="0.001" value={sizeToSlider(selected.rx)} oninput={(e) => setSize(+e.currentTarget.value)} />
+          </label>
+          <label><span>{t.pupil}</span>
+            <input type="range" min="0.2" max="1" step="0.01" value={selected.params.pupil} oninput={(e) => setParam('pupil', +e.currentTarget.value)} />
+          </label>
+          <label><span>{t.darkness}</span>
+            <input type="range" min="0" max="1" step="0.01" value={selected.params.darkness} oninput={(e) => setParam('darkness', +e.currentTarget.value)} />
+          </label>
+          <label><span>{t.shine}</span>
+            <input type="range" min="0" max="1" step="0.01" value={selected.params.shine} oninput={(e) => setParam('shine', +e.currentTarget.value)} />
+          </label>
+          <label><span>{t.feather}</span>
+            <input type="range" min="0" max="0.95" step="0.01" value={selected.params.feather} oninput={(e) => setParam('feather', +e.currentTarget.value)} />
+          </label>
+          <label><span>{t.strength}</span>
+            <input type="range" min="0" max="1" step="0.01" value={selected.params.strength} oninput={(e) => setParam('strength', +e.currentTarget.value)} />
+          </label>
+        </div>
       </div>
       <div class="panel-foot">
         <span></span>
@@ -713,6 +775,46 @@
   .panel-head strong {
     font-size: 17px;
   }
+  .scroll {
+    max-height: 40vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+  }
+  .colors {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 6px 0 4px;
+  }
+  .colors-label {
+    color: var(--muted);
+    font-size: 15px;
+  }
+  .colors-label b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 3px;
+  }
+  .chip {
+    width: 32px;
+    height: 32px;
+    flex: none;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    box-shadow: inset 0 0 0 7px rgba(0, 0, 0, 0.0);
+  }
+  .chip.on {
+    border-color: var(--fg);
+    box-shadow: 0 0 0 2px var(--accent);
+  }
   .sliders {
     display: grid;
     gap: 6px;
@@ -792,10 +894,19 @@
     background: transparent;
     font-weight: 500;
   }
+  @media (min-width: 700px) {
+    .sliders {
+      grid-template-columns: 1fr 1fr;
+      column-gap: 28px;
+    }
+    .sliders label {
+      grid-template-columns: 96px 1fr;
+    }
+  }
   @media (min-width: 900px) {
     .panel {
-      padding-left: max(16px, calc(50% - 320px));
-      padding-right: max(16px, calc(50% - 320px));
+      padding-left: max(16px, calc(50% - 420px));
+      padding-right: max(16px, calc(50% - 420px));
     }
   }
 </style>

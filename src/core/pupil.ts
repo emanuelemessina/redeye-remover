@@ -70,7 +70,7 @@ export function pupilFromIris(img: RGBAImage, ix: number, iy: number, ir: number
   if (!isRed && !isWarm) return null;
 
   // Size: area of red pixels when clearly red, else a typical dilated pupil.
-  let rad = r * 0.62;
+  let rad = r * 0.55;
   let cx = ix;
   let cy = iy;
   if (isRed) {
@@ -102,7 +102,7 @@ export function pupilFromIris(img: RGBAImage, ix: number, iy: number, ir: number
         cx = ix + ((cx - ix) * maxOff) / off;
         cy = iy + ((cy - iy) * maxOff) / off;
       }
-      rad = Math.sqrt(n / Math.PI) * 1.25;
+      rad = Math.sqrt(n / Math.PI) * 1.05;
     }
   }
   // Pupil-sized: never the whole iris (that gives "doll eyes"), at least 2 px.
@@ -112,15 +112,19 @@ export function pupilFromIris(img: RGBAImage, ix: number, iy: number, ir: number
   const redConf = Math.min(1, Math.max(0, (p90 - surround - 0.06) / 0.2));
   const warmConf = Math.min(1, Math.max(0, (warm - 18) / 25));
   const confidence = Math.max(isRed ? 0.5 + 0.5 * redConf : 0, isWarm ? 0.4 + 0.5 * warmConf : 0);
+  // The circle covers the iris; the pupil fraction says how much of it is pupil.
+  const irisR = Math.max(2, r);
+  // Leave a visible iris ring: real pupils rarely exceed ~3/4 of the iris.
+  const pupilFrac = Math.min(0.75, Math.max(0.4, rad / irisR));
   return {
     region: {
       id: newId(),
       cx,
       cy,
-      rx: rad,
-      ry: rad,
+      rx: irisR,
+      ry: irisR,
       angle: 0,
-      params: { ...DEFAULT_PARAMS },
+      params: { ...DEFAULT_PARAMS, pupil: pupilFrac },
       source: 'auto',
       confidence,
     },

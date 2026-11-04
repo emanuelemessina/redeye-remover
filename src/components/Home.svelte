@@ -67,6 +67,7 @@
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor"/></svg>
     {t.privacy}
   </p>
+  <p class="version">{t.version} {__APP_VERSION__}</p>
 </main>
 
 <style>
@@ -112,6 +113,12 @@
   }
   .choose:active {
     transform: scale(0.98);
+  }
+  .version {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    opacity: 0.7;
   }
   .privacy {
     display: flex;

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
@@ -24,7 +24,13 @@ function debugSave(): Plugin {
   };
 }
 
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(`${pkg.version} (${stamp})`),
+  },
   // Relative base so the build works on GitHub Pages sub-paths and inside native wrappers.
   base: './',
   plugins: [
@@ -32,6 +38,8 @@ export default defineConfig({
     debugSave(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Registered from main.ts so the page reloads as soon as a new version activates.
+      injectRegister: false,
       includeAssets: ['favicon.svg', 'favicon-32.png', 'icons/apple-touch-icon.png'],
       manifest: {
         name: 'Red-eye Remover',
@@ -53,6 +61,11 @@ export default defineConfig({
         // Precache everything, including the ML runtime + models, so it works fully offline.
         globPatterns: ['**/*.{js,css,html,svg,png,wasm,task,tflite}'],
         maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
+        // New versions take over immediately instead of waiting for every tab to close
+        // (otherwise a reload keeps showing the old version).
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
       },
     }),
   ],

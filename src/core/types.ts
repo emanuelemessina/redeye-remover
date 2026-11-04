@@ -5,20 +5,44 @@ export interface RGBAImage {
   data: Uint8ClampedArray | Uint8Array;
 }
 
-/** User-facing correction controls, all in 0..1. */
+export type EyeColor = 'natural' | 'brown' | 'hazel' | 'green' | 'blue' | 'gray';
+
+/** Iris tints (sRGB, mid-tone) used when the user picks an eye colour. */
+export const EYE_COLORS: Record<Exclude<EyeColor, 'natural'>, [number, number, number]> = {
+  brown: [98, 70, 50],
+  hazel: [112, 96, 66],
+  green: [92, 108, 80],
+  blue: [96, 112, 132],
+  gray: [110, 114, 118],
+};
+
+/**
+ * Per-eye controls. The circle is the iris; the pupil is a centred disc inside it.
+ * Everything is applied to the whole circle (no automatic pixel selection), so
+ * each control always has a visible effect.
+ */
 export interface CorrectionParams {
   /** Overall amount of the correction (0 = off, 1 = full). */
   strength: number;
-  /** 0 = only remove the colour, 1 = black pupil. */
+  /** Pupil radius as a fraction of the circle (1 = the whole circle is pupil). */
+  pupil: number;
+  /** Pupil darkness: 0 = just remove the colour, 1 = black. */
   darkness: number;
-  /** Softness of the region edge. */
+  /** How much of the small white reflection (catchlight) to keep. */
+  shine: number;
+  /** Iris colour around the pupil. 'natural' keeps the iris, only removing red. */
+  eyeColor: EyeColor;
+  /** Softness of the outer edge. */
   feather: number;
 }
 
 export const DEFAULT_PARAMS: CorrectionParams = {
   strength: 1,
+  pupil: 0.6,
   darkness: 0.6,
-  feather: 0.4,
+  shine: 0.6,
+  eyeColor: 'natural',
+  feather: 0.3,
 };
 
 /** An eye region: a (possibly rotated) ellipse in image pixel coordinates. */

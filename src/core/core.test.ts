@@ -25,15 +25,22 @@ describe('redness', () => {
 });
 
 describe('correction', () => {
-  it('neutralises and darkens red inside the region', () => {
+  it('neutralises and darkens red inside the pupil', () => {
     const img = solid(40, 40, [180, 40, 40]);
     const out = correctAll(img, [region(20, 20, 10)]);
     const [r, g, b] = px(out, 20, 20);
     expect(Math.abs(r - g)).toBeLessThan(3);
     expect(Math.abs(g - b)).toBeLessThan(3);
-    expect(r).toBeLessThan(40);
+    expect(r).toBeLessThan(20);
   });
-  it('also corrects dull brownish pupils (darkness always has an effect)', () => {
+  it('edits any pixels inside a manual circle, red or not (controls override detection)', () => {
+    const img = solid(40, 40, [150, 140, 130]);
+    const reg = region(20, 20, 10);
+    reg.params.pupil = 1;
+    reg.params.darkness = 0.8;
+    expect(px(correctAll(img, [reg]), 20, 20)[0]).toBeLessThan(40);
+  });
+  it('darkness always has an effect', () => {
     const img = solid(40, 40, [90, 60, 45]);
     const a = region(20, 20, 10);
     const b = region(20, 20, 10);
@@ -41,17 +48,31 @@ describe('correction', () => {
     b.params.darkness = 0.9;
     const pa = px(correctAll(img, [a]), 20, 20);
     const pb = px(correctAll(img, [b]), 20, 20);
-    expect(pa[0]).toBeLessThan(60);
     expect(pb[0]).toBeLessThan(pa[0] - 20);
   });
-  it('keeps a bright catchlight bright', () => {
-    const img = solid(41, 41, [120, 40, 40]);
-    img.data.set([240, 230, 230, 255], (20 * 41 + 20) * 4);
-    const r = region(20, 20, 10);
-    r.params.darkness = 1;
-    const out = correctAll(img, [r]);
-    expect(px(out, 20, 20)[1]).toBeGreaterThan(140);
-    expect(px(out, 15, 20)[0]).toBeLessThan(10);
+  it('recolours the iris ring with the chosen eye colour, pupil stays dark', () => {
+    const img = solid(41, 41, [170, 60, 55]);
+    const reg = region(20, 20, 16);
+    reg.params.pupil = 0.4;
+    reg.params.eyeColor = 'blue';
+    const out = correctAll(img, [reg]);
+    const iris = px(out, 20 + 9, 20);
+    expect(iris[2]).toBeGreaterThan(iris[0] + 15); // bluish
+    expect(px(out, 20, 20)[0]).toBeLessThan(30); // pupil dark
+  });
+  it('keeps a small catchlight but darkens a large white glare', () => {
+    const small = solid(41, 41, [120, 40, 40]);
+    small.data.set([240, 235, 235, 255], (20 * 41 + 20) * 4);
+    const r1 = region(20, 20, 10);
+    r1.params.shine = 1;
+    r1.params.darkness = 1;
+    expect(px(correctAll(small, [r1]), 20, 20)[1]).toBeGreaterThan(200);
+
+    const glare = solid(41, 41, [235, 230, 228]);
+    const r2 = region(20, 20, 10);
+    r2.params.shine = 1;
+    r2.params.darkness = 0.8;
+    expect(px(correctAll(glare, [r2]), 20, 20)[0]).toBeLessThan(110);
   });
   it('leaves pixels outside the region untouched', () => {
     const img = solid(40, 40, [180, 40, 40]);

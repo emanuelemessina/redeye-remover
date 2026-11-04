@@ -1,5 +1,5 @@
-import { smoothstep } from './redness';
-import type { EyeRegion, RGBAImage } from './types';
+import { redness, smoothstep } from './redness';
+import { EYE_COLORS, type EyeRegion, type RGBAImage } from './types';
 
 /** Integer bounding box of a rotated ellipse, clamped to the image. */
 export function regionBounds(r: EyeRegion, width: number, height: number) {
@@ -15,14 +15,16 @@ export function regionBounds(r: EyeRegion, width: number, height: number) {
 }
 
 /**
- * Corrects one pupil, the way photo editors do: inside the (feathered) circle
- * every pixel becomes neutral (red removed) and is darkened, except bright
- * catchlights, which keep their brightness. Reads `src`, writes `dst` (may be
- * the same image). Only pixels inside the region's bounding box change.
+ * Corrects one eye. The circle is treated as the iris with a centred pupil:
  *
- * - strength: blend between original (0) and corrected (1)
- * - darkness: 0 = only remove the colour, 1 = pupil goes black
- * - feather:  softness of the edge (fraction of the radius)
+ * - pupil disc  → neutral (red removed) and darkened by `darkness`
+ * - iris ring   → 'natural': red removed, iris kept; a colour: recoloured with
+ *                 that iris tint, keeping the original light/dark texture
+ * - catchlight  → small near-white reflections survive according to `shine`;
+ *                 large bright/pink glare (a "white pupil") is treated as pupil
+ *
+ * Nothing depends on an automatic pixel selection, so every control always acts.
+ * Reads `src`, writes `dst` (may be the same image), only inside the bounding box.
  */
 export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion): void {
   const { width, height } = src;
@@ -36,65 +38,128 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
 
   const cos = Math.cos(region.angle);
   const sin = Math.sin(region.angle);
-  // Soft edge as a fraction of the radius, but never less than ~1 px so small
-  // (low-res) pupils don't look like hard pixelated dots.
-  const rmin = Math.max(0.5, Math.min(region.rx, region.ry));
-  const feather = Math.min(0.95, Math.max(Math.max(0, p.feather), Math.min(0.5, 1 / rmin)));
   const rx = Math.max(0.5, region.rx);
   const ry = Math.max(0.5, region.ry);
+  const rmin = Math.min(rx, ry);
+  // Soft edges never thinner than ~1 px, so small pupils don't look pixelated.
+  const px1 = Math.min(0.5, 1 / rmin);
+  const feather = Math.min(0.95, Math.max(p.feather, px1));
+  const pupil = Math.min(1, Math.max(0.05, p.pupil));
+  const pupilSoft = Math.max(0.1, px1);
   const n = b.w * b.h;
+  const src8 = src.data;
 
-  // Pass 1: normalized distance + red-free luminance (mean of G and B: a red
-  // pupil is dark in those channels, a catchlight is bright in all).
+  // Pass 1: geometry, catchlight candidates, iris brightness reference.
   const dist = new Float32Array(n).fill(2);
-  const lum = new Float32Array(n);
-  const inner: number[] = [];
+  const white = new Float32Array(n);
+  let pupilN = 0;
+  let whiteN = 0;
+  const irisLuma: number[] = [];
   for (let y = 0; y < b.h; y++) {
     const py = b.y0 + y + 0.5 - region.cy;
     for (let x = 0; x < b.w; x++) {
-      const px = b.x0 + x + 0.5 - region.cx;
-      const u = (px * cos + py * sin) / rx;
-      const v = (-px * sin + py * cos) / ry;
+      const qx = b.x0 + x + 0.5 - region.cx;
+      const u = (qx * cos + py * sin) / rx;
+      const v = (-qx * sin + py * cos) / ry;
       const d = Math.sqrt(u * u + v * v);
       const k = y * b.w + x;
       dist[k] = d;
+      if (d >= 1) continue;
       const i = ((b.y0 + y) * width + b.x0 + x) * 4;
-      lum[k] = (src.data[i + 1] + src.data[i + 2]) * 0.5;
-      if (d < 0.8) inner.push(lum[k]);
+      const r = src8[i], g = src8[i + 1], bl = src8[i + 2];
+      const mn = Math.min(r, g, bl);
+      const mx = Math.max(r, g, bl);
+      // Catchlight: bright in every channel and nearly colourless.
+      const wv = smoothstep(150, 215, mn) * (1 - smoothstep(0.12, 0.3, (mx - mn) / Math.max(1, mx)));
+      white[k] = wv;
+      if (d < pupil) {
+        pupilN++;
+        if (wv > 0.5) whiteN++;
+      } else {
+        irisLuma.push(0.3 * r + 0.59 * g + 0.11 * bl);
+      }
     }
   }
-  // Typical pupil brightness; much brighter pixels are catchlights.
-  inner.sort((a, c) => a - c);
-  const ref = inner.length ? inner[Math.floor(inner.length * 0.4)] : 0;
-  const hl0 = ref + 25;
-  const hl1 = ref + 75;
+  // A real catchlight is a small spot. If "white" covers a big part of the
+  // pupil it is glare / a white pupil and gets darkened like the rest.
+  const whiteFrac = pupilN ? whiteN / pupilN : 0;
+  const glareK = whiteFrac > 0.15 ? 0.15 / whiteFrac : 1;
+  const keepK = Math.min(1, Math.max(0, p.shine)) * glareK;
+  irisLuma.sort((a, c) => a - c);
+  // Typical iris brightness (lower percentile: eyelid skin / sclera inside the
+  // circle are brighter and must not set the reference).
+  const irisRef = irisLuma.length ? Math.max(20, irisLuma[Math.floor(irisLuma.length * 0.35)]) : 80;
+  const tint = p.eyeColor !== 'natural' ? EYE_COLORS[p.eyeColor] : null;
   const dark = Math.min(1, Math.max(0, p.darkness));
 
   for (let y = 0; y < b.h; y++) {
     for (let x = 0; x < b.w; x++) {
       const k = y * b.w + x;
       const i = ((b.y0 + y) * width + b.x0 + x) * 4;
-      const r = src.data[i];
-      const g = src.data[i + 1];
-      const bl = src.data[i + 2];
+      const r = src8[i], g = src8[i + 1], bl = src8[i + 2];
       const d = dist[k];
-      const w = d >= 1 ? 0 : (feather > 0 ? 1 - smoothstep(1 - feather, 1, d) : 1) * p.strength;
+      const w = d >= 1 ? 0 : (1 - smoothstep(1 - feather, 1, d)) * p.strength;
       if (w <= 0.001) {
         if (src !== dst) {
           dst.data[i] = r;
           dst.data[i + 1] = g;
           dst.data[i + 2] = bl;
-          dst.data[i + 3] = src.data[i + 3];
+          dst.data[i + 3] = src8[i + 3];
         }
         continue;
       }
-      // Catchlights are darkened much less, so they stay but don't glare.
-      const highlight = smoothstep(hl0, hl1, lum[k]);
-      const target = lum[k] * (1 - dark * (1 - 0.65 * highlight));
-      dst.data[i] = r + (target - r) * w;
-      dst.data[i + 1] = g + (target - g) * w;
-      dst.data[i + 2] = bl + (target - bl) * w;
-      dst.data[i + 3] = src.data[i + 3];
+      // Pupil weight: 1 inside the pupil disc, 0 in the iris ring.
+      const pw = pupil >= 0.999 ? 1 : 1 - smoothstep(pupil - pupilSoft, pupil + pupilSoft * 0.5, d);
+      const keep = white[k] * keepK;
+
+      // Pupil target: red-free luminance (mean of G,B), darkened; catchlight kept.
+      const lumRF = (g + bl) * 0.5;
+      const hl = (r + g + bl) / 3;
+      const pv = lumRF * (1 - dark) * (1 - keep) + hl * keep;
+
+      // Iris target.
+      let ir: number, ig: number, ib: number;
+      let irisW = 1;
+      if (tint) {
+        const luma = 0.3 * r + 0.59 * g + 0.11 * bl;
+        // Radial iris profile: lighter mid-iris, darker limbal rim at the edge.
+        const span = Math.max(0.05, 1 - pupil);
+        const ti = Math.min(1, Math.max(0, (d - pupil) / span));
+        const profile = 0.8 + 0.25 * Math.sin(Math.PI * Math.min(1, ti * 1.2)) - 0.3 * smoothstep(0.7, 1, ti);
+        // Keep the photo's own texture (grain, fibres) around the tint.
+        const tex = Math.min(1.3, Math.max(0.75, luma / irisRef));
+        const k2 = profile * tex * 0.8;
+        ir = tint[0] * k2;
+        ig = tint[1] * k2;
+        ib = tint[2] * k2;
+        // Don't paint eyelid skin or the white of the eye that the circle overlaps.
+        // (Red pixels are always replaced: bright red glow is what we're fixing.)
+        irisW = Math.max(1 - smoothstep(irisRef * 1.3, irisRef * 1.8, luma), smoothstep(0.08, 0.3, redness(r, g, bl)));
+      } else {
+        // Natural: remove only true red (hue-gated), so brown/hazel irises
+        // keep their colour while the red glow over them goes away.
+        const m = Math.max(g, bl);
+        const red = smoothstep(0.08, 0.3, redness(r, g, bl));
+        ir = r > m ? r - (r - m) * 0.9 * red : r;
+        ig = g;
+        ib = bl;
+      }
+      if (irisW < 1) {
+        ir = r + (ir - r) * irisW;
+        ig = g + (ig - g) * irisW;
+        ib = bl + (ib - bl) * irisW;
+      }
+      ir = ir * (1 - keep) + hl * keep;
+      ig = ig * (1 - keep) + hl * keep;
+      ib = ib * (1 - keep) + hl * keep;
+
+      const tr = pv * pw + ir * (1 - pw);
+      const tg = pv * pw + ig * (1 - pw);
+      const tb = pv * pw + ib * (1 - pw);
+      dst.data[i] = r + (tr - r) * w;
+      dst.data[i + 1] = g + (tg - g) * w;
+      dst.data[i + 2] = bl + (tb - bl) * w;
+      dst.data[i + 3] = src8[i + 3];
     }
   }
 }
