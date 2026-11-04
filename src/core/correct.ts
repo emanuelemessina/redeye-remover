@@ -1,4 +1,4 @@
-import { redness, smoothstep } from './redness';
+import { boxBlur3, redness, smoothstep } from './redness';
 import { EYE_COLORS, type EyeRegion, type RGBAImage } from './types';
 
 /** Integer bounding box of a rotated ellipse, clamped to the image. */
@@ -17,11 +17,12 @@ export function regionBounds(r: EyeRegion, width: number, height: number) {
 /**
  * Corrects one eye. The circle is treated as the iris with a centred pupil:
  *
- * - pupil disc  → neutral (red removed) and darkened by `darkness`
- * - iris ring   → 'natural': red removed, iris kept; a colour: recoloured with
- *                 that iris tint, keeping the original light/dark texture
- * - catchlight  → small near-white reflections survive according to `shine`;
- *                 large bright/pink glare (a "white pupil") is treated as pupil
+ * - pupil  → red removed and darkened by `darkness`, keeping the photo's grain
+ *            and a hint of its natural tone, with a wide soft edge (no "painted disc")
+ * - iris   → 'natural': only true red removed; a colour: a gentle tint that keeps
+ *            the photo's own brightness and texture
+ * - catchlight → small near-white reflections survive according to `shine`;
+ *            large bright/pink glare (a "white pupil") is treated as pupil
  *
  * Nothing depends on an automatic pixel selection, so every control always acts.
  * Reads `src`, writes `dst` (may be the same image), only inside the bounding box.
@@ -41,16 +42,18 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
   const rx = Math.max(0.5, region.rx);
   const ry = Math.max(0.5, region.ry);
   const rmin = Math.min(rx, ry);
-  // Soft edges never thinner than ~1 px, so small pupils don't look pixelated.
-  const px1 = Math.min(0.5, 1 / rmin);
-  const feather = Math.min(0.95, Math.max(p.feather, px1));
+  // Edges are never harder than ~1.5 px, so small pupils don't look pixelated.
+  const px = Math.min(0.6, 1.5 / rmin);
+  const feather = Math.min(0.95, Math.max(p.feather, px));
   const pupil = Math.min(1, Math.max(0.05, p.pupil));
-  const pupilSoft = Math.max(0.1, px1);
+  // Wide, smooth pupil/iris transition: real pupils have no hard outline.
+  const pupilSoft = Math.max(0.2, px);
   const n = b.w * b.h;
-  const src8 = src.data;
+  const S = src.data;
 
-  // Pass 1: geometry, catchlight candidates, iris brightness reference.
+  // Pass 1: geometry, red-free luminance (for grain), catchlights, iris reference.
   const dist = new Float32Array(n).fill(2);
+  const lum = new Float32Array(n);
   const white = new Float32Array(n);
   let pupilN = 0;
   let whiteN = 0;
@@ -64,9 +67,12 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
       const d = Math.sqrt(u * u + v * v);
       const k = y * b.w + x;
       dist[k] = d;
-      if (d >= 1) continue;
       const i = ((b.y0 + y) * width + b.x0 + x) * 4;
-      const r = src8[i], g = src8[i + 1], bl = src8[i + 2];
+      const r = S[i], g = S[i + 1], bl = S[i + 2];
+      // Luminance with the red excess removed.
+      const m = Math.max(g, bl);
+      lum[k] = 0.3 * Math.min(r, m) + 0.59 * g + 0.11 * bl;
+      if (d >= 1) continue;
       const mn = Math.min(r, g, bl);
       const mx = Math.max(r, g, bl);
       // Catchlight: bright in every channel and nearly colourless.
@@ -80,6 +86,13 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
       }
     }
   }
+  // Typical pupil brightness (red-free); used to tell eyelid skin from pupil.
+  const pupilLum: number[] = [];
+  for (let k = 0; k < n; k++) if (dist[k] < pupil) pupilLum.push(lum[k]);
+  pupilLum.sort((a, c) => a - c);
+  const pupilRef = pupilLum.length ? pupilLum[Math.floor(pupilLum.length * 0.4)] : 0;
+  // Local average luminance; the difference is film grain / fine detail.
+  const lumBlur = b.w > 2 && b.h > 2 ? boxBlur3(lum, b.w, b.h) : lum;
   // A real catchlight is a small spot. If "white" covers a big part of the
   // pupil it is glare / a white pupil and gets darkened like the rest.
   const whiteFrac = pupilN ? whiteN / pupilN : 0;
@@ -90,13 +103,15 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
   // circle are brighter and must not set the reference).
   const irisRef = irisLuma.length ? Math.max(20, irisLuma[Math.floor(irisLuma.length * 0.35)]) : 80;
   const tint = p.eyeColor !== 'natural' ? EYE_COLORS[p.eyeColor] : null;
+  const tintL = tint ? 0.3 * tint[0] + 0.59 * tint[1] + 0.11 * tint[2] : 1;
+  const amount = Math.min(1, Math.max(0, p.colorAmount ?? 0.5));
   const dark = Math.min(1, Math.max(0, p.darkness));
 
   for (let y = 0; y < b.h; y++) {
     for (let x = 0; x < b.w; x++) {
       const k = y * b.w + x;
       const i = ((b.y0 + y) * width + b.x0 + x) * 4;
-      const r = src8[i], g = src8[i + 1], bl = src8[i + 2];
+      const r = S[i], g = S[i + 1], bl = S[i + 2];
       const d = dist[k];
       const w = d >= 1 ? 0 : (1 - smoothstep(1 - feather, 1, d)) * p.strength;
       if (w <= 0.001) {
@@ -104,62 +119,67 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
           dst.data[i] = r;
           dst.data[i + 1] = g;
           dst.data[i + 2] = bl;
-          dst.data[i + 3] = src8[i + 3];
+          dst.data[i + 3] = S[i + 3];
         }
         continue;
       }
-      // Pupil weight: 1 inside the pupil disc, 0 in the iris ring.
-      const pw = pupil >= 0.999 ? 1 : 1 - smoothstep(pupil - pupilSoft, pupil + pupilSoft * 0.5, d);
+      let pw = pupil >= 0.98 ? 1 : 1 - smoothstep(pupil - pupilSoft, pupil + pupilSoft * 0.6, d);
+      // Eyelids cover part of the pupil: skin-coloured pixels (orange hue,
+      // clearly brighter than the pupil) are not darkened, so the dark area
+      // follows the eye opening instead of being a perfect disc.
+      if (pw > 0 && lum[k] > pupilRef + 25) {
+        const mx = Math.max(r, g, bl);
+        const mn = Math.min(r, g, bl);
+        const sat = (mx - mn) / Math.max(1, mx);
+        const hue = r >= g && r >= bl && mx > mn ? (60 * (g - bl)) / (mx - mn) : -1;
+        const skin = hue < 0 ? 0 : smoothstep(9, 15, hue) * (1 - smoothstep(35, 50, hue)) * smoothstep(0.12, 0.22, sat);
+        // (Eyelids only reach the outer part of the pupil.)
+        pw *= 1 - skin * smoothstep(pupilRef + 25, pupilRef + 65, lum[k]) * smoothstep(0.55, 0.85, d / pupil);
+      }
       const keep = white[k] * keepK;
-
-      // Pupil target: red-free luminance (mean of G,B), darkened; catchlight kept.
-      const lumRF = (g + bl) * 0.5;
+      const m = Math.max(g, bl);
       const hl = (r + g + bl) / 3;
-      const pv = lumRF * (1 - dark) * (1 - keep) + hl * keep;
 
-      // Iris target.
-      let ir: number, ig: number, ib: number;
-      let irisW = 1;
+      // Pupil: red fully removed, brightness scaled down, grain kept.
+      const nr = Math.min(r, m);
+      const nl = Math.max(1, 0.3 * nr + 0.59 * g + 0.11 * bl);
+      // Fine grain only: larger bright/dark spots are not grain (e.g. glare specks).
+      const grain = Math.max(-12, Math.min(12, lum[k] - lumBlur[k]));
+      const target = Math.max(0, lumBlur[k] * (1 - dark) + grain * (1 - 0.4 * dark));
+      const sc = target / nl;
+      // Mostly neutral with a hint of the pixel's own (non-red) tone.
+      let pr = (nr * sc) * 0.6 + target * 0.4;
+      let pg = (g * sc) * 0.6 + target * 0.4;
+      let pb = (bl * sc) * 0.6 + target * 0.4;
+      pr = pr * (1 - keep) + hl * keep;
+      pg = pg * (1 - keep) + hl * keep;
+      pb = pb * (1 - keep) + hl * keep;
+
+      // Iris: remove only true red, then optionally tint.
+      const red = smoothstep(0.08, 0.3, redness(r, g, bl));
+      let ir = r > m ? r - (r - m) * 0.9 * red : r;
+      let ig = g;
+      let ib = bl;
       if (tint) {
-        const luma = 0.3 * r + 0.59 * g + 0.11 * bl;
-        // Radial iris profile: lighter mid-iris, darker limbal rim at the edge.
-        const span = Math.max(0.05, 1 - pupil);
-        const ti = Math.min(1, Math.max(0, (d - pupil) / span));
-        const profile = 0.8 + 0.25 * Math.sin(Math.PI * Math.min(1, ti * 1.2)) - 0.3 * smoothstep(0.7, 1, ti);
-        // Keep the photo's own texture (grain, fibres) around the tint.
-        const tex = Math.min(1.3, Math.max(0.75, luma / irisRef));
-        const k2 = profile * tex * 0.8;
-        ir = tint[0] * k2;
-        ig = tint[1] * k2;
-        ib = tint[2] * k2;
-        // Don't paint eyelid skin or the white of the eye that the circle overlaps.
-        // (Red pixels are always replaced: bright red glow is what we're fixing.)
-        irisW = Math.max(1 - smoothstep(irisRef * 1.3, irisRef * 1.8, luma), smoothstep(0.08, 0.3, redness(r, g, bl)));
-      } else {
-        // Natural: remove only true red (hue-gated), so brown/hazel irises
-        // keep their colour while the red glow over them goes away.
-        const m = Math.max(g, bl);
-        const red = smoothstep(0.08, 0.3, redness(r, g, bl));
-        ir = r > m ? r - (r - m) * 0.9 * red : r;
-        ig = g;
-        ib = bl;
+        const L = 0.3 * ir + 0.59 * ig + 0.11 * ib;
+        // Where red glow hid the iris, what's left is nearly black: lift it a
+        // little towards a plausible iris brightness so the colour can show.
+        const floor = 0.65 * tintL;
+        const Lc = L < floor ? L + (floor - L) * 0.5 * amount : L;
+        // Don't tint eyelid skin or the white of the eye that the circle overlaps.
+        const irisW = (0.25 + 0.6 * amount) * (1 - smoothstep(irisRef * 1.3, irisRef * 1.8, L));
+        ir += ((Lc * tint[0]) / tintL - ir) * irisW;
+        ig += ((Lc * tint[1]) / tintL - ig) * irisW;
+        ib += ((Lc * tint[2]) / tintL - ib) * irisW;
       }
-      if (irisW < 1) {
-        ir = r + (ir - r) * irisW;
-        ig = g + (ig - g) * irisW;
-        ib = bl + (ib - bl) * irisW;
-      }
-      ir = ir * (1 - keep) + hl * keep;
-      ig = ig * (1 - keep) + hl * keep;
-      ib = ib * (1 - keep) + hl * keep;
 
-      const tr = pv * pw + ir * (1 - pw);
-      const tg = pv * pw + ig * (1 - pw);
-      const tb = pv * pw + ib * (1 - pw);
+      const tr = pr * pw + ir * (1 - pw);
+      const tg = pg * pw + ig * (1 - pw);
+      const tb = pb * pw + ib * (1 - pw);
       dst.data[i] = r + (tr - r) * w;
       dst.data[i + 1] = g + (tg - g) * w;
       dst.data[i + 2] = bl + (tb - bl) * w;
-      dst.data[i + 3] = src8[i + 3];
+      dst.data[i + 3] = S[i + 3];
     }
   }
 }

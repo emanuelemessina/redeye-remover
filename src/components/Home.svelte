@@ -6,17 +6,33 @@
   let input: HTMLInputElement;
   let dragging = $state(false);
 
+  // Guard: a second click while a dialog is open must not open another one.
+  let picking = false;
   async function choose() {
-    if (supportsFileSystemAccess) {
-      try {
-        const res = await pickWithHandle();
-        if (res) onpick(res.file, res.handle);
-        return;
-      } catch {
-        /* fall back to the plain file input */
+    if (picking) return;
+    picking = true;
+    try {
+      if (supportsFileSystemAccess) {
+        const t0 = performance.now();
+        try {
+          const res = await pickWithHandle();
+          if (res) onpick(res.file, res.handle);
+          return;
+        } catch (e) {
+          // Only fall back if the picker failed straight away (e.g. not allowed
+          // in this context). If a dialog was shown, never open a second one.
+          if (performance.now() - t0 > 250) {
+            console.warn('file picker failed', e);
+            return;
+          }
+        }
       }
+      input.click();
+    } finally {
+      // The plain input's dialog doesn't tell us when it closes; a short delay
+      // is enough to swallow an accidental double-click.
+      setTimeout(() => (picking = false), 600);
     }
-    input.click();
   }
 
   function onchange() {

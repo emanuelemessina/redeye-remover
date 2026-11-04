@@ -4,7 +4,9 @@ import { correctAll } from '../src/core/correct';
 import { DEFAULT_PARAMS, type EyeColor, type EyeRegion } from '../src/core/types';
 import { blank, crop, label, loadJpeg, paste, resize, saveJpeg } from './imgutil';
 
-const [out, ...specs] = process.argv.slice(2);
+const [out, ...specs0] = process.argv.slice(2);
+const amount = Number(process.env.AMOUNT ?? 0.5);
+const specs = specs0;
 const colors: EyeColor[] = ['natural', 'brown', 'hazel', 'green', 'blue', 'gray'];
 const cell = 150;
 const sheet = blank(cell * (colors.length + 1), cell * specs.length, 30);
@@ -17,7 +19,7 @@ specs.forEach((spec, row) => {
     paste(sheet, resize(crop(im, Math.round(cx - half), Math.round(cy - half), half * 2, half * 2), cell - 4, cell - 4), col * cell + 2, row * cell + 2);
   show(img, 0);
   colors.forEach((c, k) => {
-    const reg: EyeRegion = { id: 'x', cx, cy, rx: r, ry: r, angle: 0, source: 'manual', params: { ...DEFAULT_PARAMS, pupil: c === 'natural' ? pupil : Math.min(pupil, 0.45), eyeColor: c } };
+    const reg: EyeRegion = { id: 'x', cx, cy, rx: r, ry: r, angle: 0, source: 'manual', params: { ...DEFAULT_PARAMS, pupil: c === 'natural' ? pupil : Math.min(pupil, 0.45), eyeColor: c, colorAmount: amount } };
     show(correctAll(img, [reg]), k + 1);
   });
   label(sheet, String(row), 4, row * cell + 4, 3);

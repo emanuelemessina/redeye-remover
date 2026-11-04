@@ -57,7 +57,7 @@ describe('correction', () => {
     reg.params.eyeColor = 'blue';
     const out = correctAll(img, [reg]);
     const iris = px(out, 20 + 9, 20);
-    expect(iris[2]).toBeGreaterThan(iris[0] + 15); // bluish
+    expect(iris[2]).toBeGreaterThan(iris[0] + 5); // bluish
     expect(px(out, 20, 20)[0]).toBeLessThan(30); // pupil dark
   });
   it('keeps a small catchlight but darkens a large white glare', () => {

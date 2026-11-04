@@ -74,57 +74,90 @@ async function canvasCanHold(w: number, h: number): Promise<boolean> {
 const isTouch = () => typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
 
 export const canSaveInPlace = (photo: Photo) =>
-  !!photo.handle && (photo.type === "image/jpeg" || photo.type === "image/png");
+  !!photo.handle && (photo.type === 'image/jpeg' || photo.type === 'image/png');
 
-/** Save as a new file: native save dialog (desktop Chromium), share sheet (phones), or download. */
-export async function saveCopy(photo: Photo, blob: Blob): Promise<'saved' | 'cancelled'> {
+export type SaveResult = 'saved' | 'cancelled' | { share: File };
+
+/**
+ * Save as a new file. Exactly one dialog is ever shown:
+ * - desktop Chromium: the native "Save as" dialog, opened *before* rendering so
+ *   it still counts as a response to the click;
+ * - phones: the share sheet ("Save Image" to the photo library); if the browser
+ *   refuses because rendering took too long, `{ share }` is returned and the UI
+ *   asks for one more tap;
+ * - elsewhere: a normal download.
+ * Never falls back to a second method after a dialog was shown.
+ */
+export async function saveCopy(photo: Photo, render: () => Promise<Blob>): Promise<SaveResult> {
   const name = copyName(photo);
-  const file = new File([blob], name, { type: blob.type });
+  const type = outputType(photo);
 
+  if (!isTouch() && 'showSaveFilePicker' in window) {
+    let handle: any;
+    try {
+      handle = await (window as any).showSaveFilePicker({
+        suggestedName: name,
+        startIn: photo.handle ?? 'pictures',
+        types: [{ description: 'Image', accept: { [type]: [type === 'image/png' ? '.png' : '.jpg'] } }],
+      });
+    } catch (e) {
+      if ((e as DOMException)?.name === 'AbortError') return 'cancelled';
+      throw e;
+    }
+    const blob = await render();
+    const w = await handle.createWritable();
+    await w.write(blob);
+    await w.close();
+    return 'saved';
+  }
+
+  const blob = await render();
+  const file = new File([blob], name, { type: blob.type });
   if (isTouch() && navigator.canShare?.({ files: [file] })) {
     try {
-      // iOS / Android: the share sheet offers "Save Image" to the photo library.
       await navigator.share({ files: [file] });
       return 'saved';
     } catch (e) {
-      if ((e as DOMException)?.name === 'AbortError') return 'cancelled';
-      // fall through to download
+      const n = (e as DOMException)?.name;
+      if (n === 'AbortError') return 'cancelled';
+      if (n === 'NotAllowedError') return { share: file }; // needs a fresh tap
+      throw e;
     }
   }
+  download(file);
+  return 'saved';
+}
 
-  if ('showSaveFilePicker' in window) {
-    try {
-      const startIn = photo.handle ?? 'pictures';
-      const handle = await (window as any).showSaveFilePicker({
-        suggestedName: name,
-        startIn,
-        types: [{ description: 'Image', accept: { [blob.type]: [blob.type === 'image/png' ? '.png' : '.jpg'] } }],
-      });
-      const w = await handle.createWritable();
-      await w.write(blob);
-      await w.close();
-      return 'saved';
-    } catch (e) {
-      if ((e as DOMException)?.name === 'AbortError') return 'cancelled';
-    }
+/** Share sheet for a file rendered earlier (called from a fresh tap). */
+export async function shareFile(file: File): Promise<'saved' | 'cancelled'> {
+  try {
+    await navigator.share({ files: [file] });
+    return 'saved';
+  } catch (e) {
+    if ((e as DOMException)?.name === 'AbortError') return 'cancelled';
+    download(file);
+    return 'saved';
   }
+}
 
-  const url = URL.createObjectURL(blob);
+function download(file: File) {
+  const url = URL.createObjectURL(file);
   const a = document.createElement('a');
   a.href = url;
-  a.download = name;
+  a.download = file.name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  return 'saved';
 }
 
 /** Overwrite the original file (only when opened with a file handle). */
-export async function saveInPlace(photo: Photo, blob: Blob): Promise<'saved' | 'cancelled'> {
+export async function saveInPlace(photo: Photo, render: () => Promise<Blob>): Promise<'saved' | 'cancelled'> {
   const h = photo.handle as any;
   if (!h) throw new Error('no handle');
+  // Ask for permission first, while we are still handling the click.
   if (h.requestPermission && (await h.requestPermission({ mode: 'readwrite' })) !== 'granted') return 'cancelled';
+  const blob = await render();
   const w = await h.createWritable();
   await w.write(blob);
   await w.close();

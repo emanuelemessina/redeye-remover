@@ -6,7 +6,7 @@
   import { DEFAULT_PARAMS, EYE_COLORS, type CorrectionParams, type EyeColor, type EyeRegion } from '../core/types';
   import { t } from '../lib/i18n';
   import { displayScale, type Photo } from '../lib/photo';
-  import { canSaveInPlace, renderFile, saveCopy, saveInPlace } from '../lib/save';
+  import { canSaveInPlace, renderFile, saveCopy, saveInPlace, shareFile } from '../lib/save';
 
   let { photo, onclose }: { photo: Photo; onclose: () => void } = $props();
 
@@ -43,9 +43,14 @@
   const zoomed = $derived(scale > fitScale * 1.05);
 
   let viewport: HTMLDivElement;
-  let canvas: HTMLCanvasElement;
+  // `view` is the on-screen canvas, sized to the viewport at device resolution.
+  // `work` holds the corrected photo (at up to full resolution) and is drawn into
+  // `view` with high-quality resampling, so the preview looks like the exported
+  // file in a normal photo viewer (no crude browser stretching of a huge canvas).
+  let view: HTMLCanvasElement;
   const ds = displayScale(W, H);
   const base = document.createElement('canvas');
+  const work = document.createElement('canvas');
   const tmp = document.createElement('canvas');
 
   function fit() {
@@ -92,11 +97,10 @@
     });
   }
 
+  /** Re-applies all corrections into `work`, then refreshes the screen. */
   function render() {
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = work.getContext('2d')!;
     ctx.drawImage(base, 0, 0);
-    if (comparing) return;
     const list = $state.snapshot(regions) as EyeRegion[];
     const tctx = tmp.getContext('2d')!;
     for (const r of list) {
@@ -107,7 +111,51 @@
       tctx.putImageData(new ImageData(patch.data as Uint8ClampedArray<ArrayBuffer>, box.w, box.h), 0, 0);
       ctx.drawImage(tmp, box.x0 * ds, box.y0 * ds, box.w * ds, box.h * ds);
     }
+    drawView();
   }
+
+  let viewRaf = 0;
+  let idleTimer = 0;
+  let fast = false;
+  function scheduleView() {
+    // While panning/zooming use quick resampling, then redraw in high quality.
+    fast = true;
+    clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => {
+      fast = false;
+      drawView();
+    }, 160);
+    if (viewRaf) return;
+    viewRaf = requestAnimationFrame(() => {
+      viewRaf = 0;
+      drawView();
+    });
+  }
+
+  function drawView() {
+    if (!view || !vw || !vh) return;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.round(vw * dpr);
+    const ph = Math.round(vh * dpr);
+    if (view.width !== pw || view.height !== ph) {
+      view.width = pw;
+      view.height = ph;
+    }
+    const ctx = view.getContext('2d')!;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, pw, ph);
+    const k = (dpr * scale) / ds;
+    ctx.setTransform(k, 0, 0, k, dpr * tx, dpr * ty);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = fast ? 'low' : 'high';
+    ctx.drawImage(comparing ? base : work, 0, 0);
+  }
+
+  $effect(() => {
+    // Redraw the screen whenever the view moves or resizes.
+    void [scale, tx, ty, vw, vh];
+    scheduleView();
+  });
 
   // ---- history ----
   function snapshot() {
@@ -129,8 +177,8 @@
     base.width = Math.round(W * ds);
     base.height = Math.round(H * ds);
     base.getContext('2d')!.drawImage(photo.bitmap, 0, 0, base.width, base.height);
-    canvas.width = base.width;
-    canvas.height = base.height;
+    work.width = base.width;
+    work.height = base.height;
     render();
     await tick();
     // Let the browser paint the photo before the heavy work starts.
@@ -389,33 +437,55 @@
   // ---- compare ----
   function startCompare() {
     comparing = true;
-    render();
+    drawView();
   }
   function endCompare() {
     if (!comparing) return;
     comparing = false;
-    render();
+    drawView();
   }
 
   // ---- save / close ----
+  let saving = false;
+  let pendingShare: File | null = $state(null);
   async function doSave(mode: 'copy' | 'replace') {
+    // Guard: repeated clicks must never open a second dialog.
+    if (saving) return;
+    saving = true;
     saveSheet = false;
-    busy = t.save + '…';
+    const list = $state.snapshot(regions) as EyeRegion[];
+    const render = async () => {
+      busy = t.save + '…';
+      await new Promise((r) => setTimeout(r, 30)); // let the overlay paint
+      return renderFile(photo, list);
+    };
     try {
-      const blob = await renderFile(photo, $state.snapshot(regions) as EyeRegion[]);
-      const res = mode === 'copy' ? await saveCopy(photo, blob) : await saveInPlace(photo, blob);
+      const res = mode === 'copy' ? await saveCopy(photo, render) : await saveInPlace(photo, render);
       if (res === 'saved') {
         dirty = false;
         showToast(t.saved);
+      } else if (typeof res === 'object') {
+        pendingShare = res.share;
       }
     } catch (e) {
       console.error(e);
       showToast(t.saveFailed);
     } finally {
       busy = null;
+      saving = false;
+    }
+  }
+  async function finishShare() {
+    const f = pendingShare;
+    pendingShare = null;
+    if (!f) return;
+    if ((await shareFile(f)) === 'saved') {
+      dirty = false;
+      showToast(t.saved);
     }
   }
   function onSave() {
+    if (saving) return;
     selectedId = null;
     if (canSaveInPlace(photo)) saveSheet = true;
     else doSave('copy');
@@ -460,15 +530,15 @@
     onpointercancel={onpointerup}
     {onwheel}
   >
+    <canvas class="view" bind:this={view}></canvas>
     <div class="stage" style="width:{W}px;height:{H}px;transform:translate({tx}px,{ty}px) scale({scale})">
-      <canvas bind:this={canvas} style="width:{W}px;height:{H}px"></canvas>
       {#if phase === 'ready' && !comparing}
         <svg viewBox="0 0 {W} {H}" width={W} height={H}>
           {#each regions as r (r.id)}
             {@const sel = r.id === selectedId}
             {@const gap = ringW * (sel ? 2 : 1)}
-            <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke="rgba(0,0,0,0.5)" stroke-width={ringW * (sel ? 2.6 : 1.6)} />
-            <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke={sel ? '#fff' : 'rgba(255,255,255,0.8)'} stroke-width={ringW * (sel ? 1.4 : 0.7)} />
+            <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke={sel ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.25)'} stroke-width={ringW * (sel ? 2.6 : 1.4)} />
+            <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke={sel ? '#fff' : 'rgba(255,255,255,0.55)'} stroke-width={ringW * (sel ? 1.4 : 0.6)} />
             {#if sel && r.params.pupil < 0.98}
               <ellipse cx={r.cx} cy={r.cy} rx={r.rx * r.params.pupil} ry={r.ry * r.params.pupil} fill="none" stroke="rgba(255,255,255,0.7)" stroke-width={ringW * 0.8} stroke-dasharray="{ringW * 3} {ringW * 3}" />
             {/if}
@@ -527,6 +597,11 @@
           </div>
         </div>
         <div class="sliders" onpointerdown={snapshot} role="group">
+          {#if selected.params.eyeColor !== 'natural'}
+            <label><span>{t.colorAmount}</span>
+              <input type="range" min="0" max="1" step="0.01" value={selected.params.colorAmount} oninput={(e) => setParam('colorAmount', +e.currentTarget.value)} />
+            </label>
+          {/if}
           <label><span>{t.size}</span>
             <input type="range" min="0" max="1" step="0.001" value={sizeToSlider(selected.rx)} oninput={(e) => setSize(+e.currentTarget.value)} />
           </label>
@@ -587,6 +662,15 @@
     </div>
   {/if}
 
+  {#if pendingShare}
+    <div class="sheet-backdrop" role="presentation">
+      <div class="sheet" role="dialog" aria-modal="true">
+        <button class="big primary" onclick={finishShare}>{t.saveCopy}</button>
+        <button class="big plain" onclick={() => (pendingShare = null)}>{t.cancel}</button>
+      </div>
+    </div>
+  {/if}
+
   {#if confirmClose}
     <div class="sheet-backdrop" role="presentation">
       <div class="sheet" role="alertdialog" aria-modal="true">
@@ -638,7 +722,13 @@
     top: 0;
     transform-origin: 0 0;
   }
-  .stage canvas,
+  .view {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
   .stage svg {
     position: absolute;
     left: 0;

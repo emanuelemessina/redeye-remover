@@ -9,11 +9,11 @@ export type EyeColor = 'natural' | 'brown' | 'hazel' | 'green' | 'blue' | 'gray'
 
 /** Iris tints (sRGB, mid-tone) used when the user picks an eye colour. */
 export const EYE_COLORS: Record<Exclude<EyeColor, 'natural'>, [number, number, number]> = {
-  brown: [98, 70, 50],
-  hazel: [112, 96, 66],
-  green: [92, 108, 80],
-  blue: [96, 112, 132],
-  gray: [110, 114, 118],
+  brown: [104, 72, 48],
+  hazel: [112, 96, 64],
+  green: [90, 108, 80],
+  blue: [90, 108, 128],
+  gray: [108, 112, 116],
 };
 
 /**
@@ -32,6 +32,8 @@ export interface CorrectionParams {
   shine: number;
   /** Iris colour around the pupil. 'natural' keeps the iris, only removing red. */
   eyeColor: EyeColor;
+  /** How strongly the chosen eye colour is applied (ignored for 'natural'). */
+  colorAmount: number;
   /** Softness of the outer edge. */
   feather: number;
 }
@@ -42,6 +44,7 @@ export const DEFAULT_PARAMS: CorrectionParams = {
   darkness: 0.6,
   shine: 0.6,
   eyeColor: 'natural',
+  colorAmount: 0.6,
   feather: 0.3,
 };
 
