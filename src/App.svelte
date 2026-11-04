@@ -3,10 +3,14 @@
   import Home from './components/Home.svelte';
   import { t } from './lib/i18n';
   import { loadPhoto, PhotoLoadError, type Photo } from './lib/photo';
+  import { applyUpdateIfIdle, startUpdates } from './lib/update';
 
   let photo: Photo | null = $state.raw(null);
   let loading = $state(false);
   let error: string | null = $state(null);
+
+  // New versions are applied only while no photo is being opened or edited.
+  startUpdates(() => !!photo || loading);
 
   async function onpick(file: File, handle?: FileSystemFileHandle) {
     loading = true;
@@ -34,6 +38,7 @@
   function close() {
     photo?.bitmap.close();
     photo = null;
+    applyUpdateIfIdle();
   }
 </script>
 
