@@ -106,3 +106,32 @@ export function correctAll(src: RGBAImage, regions: EyeRegion[]): RGBAImage {
   for (const r of regions) correctRegion(out, out, r);
   return out;
 }
+
+/** Integer box covering a region, used to cut out patches. */
+export interface Box {
+  x0: number;
+  y0: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Corrected pixels for the bounding box of `target`, with every region that
+ * touches the box applied. Only reads `src`; returns a small RGBA patch.
+ */
+export function correctedPatch(src: RGBAImage, target: EyeRegion, all: EyeRegion[]): { box: Box; patch: RGBAImage } {
+  const b = regionBounds(target, src.width, src.height);
+  const box = { x0: b.x0, y0: b.y0, w: b.w, h: b.h };
+  const data = new Uint8ClampedArray(box.w * box.h * 4);
+  for (let y = 0; y < box.h; y++) {
+    const s = ((box.y0 + y) * src.width + box.x0) * 4;
+    data.set(src.data.subarray(s, s + box.w * 4), y * box.w * 4);
+  }
+  const patch: RGBAImage = { width: box.w, height: box.h, data };
+  for (const r of all) {
+    const rb = regionBounds(r, src.width, src.height);
+    if (rb.x1 <= box.x0 || rb.x0 >= box.x0 + box.w || rb.y1 <= box.y0 || rb.y0 >= box.y0 + box.h) continue;
+    correctRegion(patch, patch, { ...r, cx: r.cx - box.x0, cy: r.cy - box.y0 });
+  }
+  return { box, patch };
+}

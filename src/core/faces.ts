@@ -62,6 +62,7 @@ export interface ScanOptions {
   tileInput?: number;
   minScore?: number;
   onProgress?: (p: number) => void;
+  signal?: AbortSignal;
 }
 
 interface Tile {
@@ -185,6 +186,7 @@ export async function scanFaces(
       }
       // Yield so the UI stays responsive.
       await new Promise((r) => setTimeout(r, 0));
+      if (opts.signal?.aborted) return faces;
     }
   }
   return faces;

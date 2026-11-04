@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "eval": "tsx tools/eval.ts"
+    "icons": "tsx tools/make-icons.ts",
+    "debug:blobs": "tsx tools/blobsheet.ts"
   },
   "repository": {
     "type": "git",

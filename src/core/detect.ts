@@ -63,6 +63,7 @@ export async function detectRedEyes(
   const eyes: DetectedEyeInfo[] = [];
 
   for (let fi = 0; fi < faces.length; fi++) {
+    if (opts.signal?.aborted) break;
     const f = faces[fi];
     const ed = Math.hypot(f.eyes[0].x - f.eyes[1].x, f.eyes[0].y - f.eyes[1].y);
     if (ed < 4) continue;
