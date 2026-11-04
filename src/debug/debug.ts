@@ -75,6 +75,10 @@ function addCell(src: CanvasImageSource, x: number, y: number, half: number, tex
     const fixed = correctAll(img, regions);
     const after = new OffscreenCanvas(img.width, img.height);
     after.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(fixed.data), img.width, img.height), 0, 0);
+    if (params.get('full')) {
+      const blob = await after.convertToBlob({ type: 'image/jpeg', quality: 0.95 });
+      await fetch(`/__save?name=${id}-ours.jpg`, { method: 'POST', body: blob });
+    }
     for (const r of regions) {
       const half = Math.max(10, r.rx * 3.5);
       const ei = det.eyes.find((e) => e.region === r);

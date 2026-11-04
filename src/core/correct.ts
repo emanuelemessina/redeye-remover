@@ -1,5 +1,5 @@
-import { boxBlur3, redness, smoothstep } from './redness';
-import { sensitivityToThreshold, type EyeRegion, type RGBAImage } from './types';
+import { smoothstep } from './redness';
+import type { EyeRegion, RGBAImage } from './types';
 
 /** Integer bounding box of a rotated ellipse, clamped to the image. */
 export function regionBounds(r: EyeRegion, width: number, height: number) {
@@ -15,8 +15,14 @@ export function regionBounds(r: EyeRegion, width: number, height: number) {
 }
 
 /**
- * Removes red from one eye region. Reads from `src`, writes into `dst`
- * (may be the same image). Only pixels inside the region's bounding box change.
+ * Corrects one pupil, the way photo editors do: inside the (feathered) circle
+ * every pixel becomes neutral (red removed) and is darkened, except bright
+ * catchlights, which keep their brightness. Reads `src`, writes `dst` (may be
+ * the same image). Only pixels inside the region's bounding box change.
+ *
+ * - strength: blend between original (0) and corrected (1)
+ * - darkness: 0 = only remove the colour, 1 = pupil goes black
+ * - feather:  softness of the edge (fraction of the radius)
  */
 export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion): void {
   const { width, height } = src;
@@ -28,21 +34,21 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
     return;
   }
 
-  // Redness threshold: sensitivity 0 -> only very red, 1 -> dull red too.
-  const t0 = sensitivityToThreshold(p.sensitivity);
-  const t1 = t0 + 0.14;
-
   const cos = Math.cos(region.angle);
   const sin = Math.sin(region.angle);
-  // Tiny regions (low-res photos) get a proportionally harder edge, or the
-  // feather would eat the whole pupil.
-  const small = Math.min(1, Math.min(region.rx, region.ry) / 5);
-  const feather = Math.min(0.95, Math.max(0, p.feather)) * small;
+  // Soft edge as a fraction of the radius, but never less than ~1 px so small
+  // (low-res) pupils don't look like hard pixelated dots.
+  const rmin = Math.max(0.5, Math.min(region.rx, region.ry));
+  const feather = Math.min(0.95, Math.max(Math.max(0, p.feather), Math.min(0.5, 1 / rmin)));
   const rx = Math.max(0.5, region.rx);
   const ry = Math.max(0.5, region.ry);
+  const n = b.w * b.h;
 
-  // 1) raw mask = redness mask * radial falloff
-  const mask = new Float32Array(b.w * b.h);
+  // Pass 1: normalized distance + red-free luminance (mean of G and B: a red
+  // pupil is dark in those channels, a catchlight is bright in all).
+  const dist = new Float32Array(n).fill(2);
+  const lum = new Float32Array(n);
+  const inner: number[] = [];
   for (let y = 0; y < b.h; y++) {
     const py = b.y0 + y + 0.5 - region.cy;
     for (let x = 0; x < b.w; x++) {
@@ -50,26 +56,29 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
       const u = (px * cos + py * sin) / rx;
       const v = (-px * sin + py * cos) / ry;
       const d = Math.sqrt(u * u + v * v);
-      if (d >= 1) continue;
-      const radial = feather > 0 ? 1 - smoothstep(1 - feather, 1, d) : 1;
+      const k = y * b.w + x;
+      dist[k] = d;
       const i = ((b.y0 + y) * width + b.x0 + x) * 4;
-      const s = redness(src.data[i], src.data[i + 1], src.data[i + 2]);
-      mask[y * b.w + x] = smoothstep(t0, t1, s) * radial;
+      lum[k] = (src.data[i + 1] + src.data[i + 2]) * 0.5;
+      if (d < 0.8) inner.push(lum[k]);
     }
   }
-  // 2) smooth the mask a bit so film grain does not leave red speckles
-  const m = b.w > 2 && b.h > 2 ? boxBlur3(mask, b.w, b.h) : mask;
+  // Typical pupil brightness; much brighter pixels are catchlights.
+  inner.sort((a, c) => a - c);
+  const ref = inner.length ? inner[Math.floor(inner.length * 0.4)] : 0;
+  const hl0 = ref + 25;
+  const hl1 = ref + 75;
+  const dark = Math.min(1, Math.max(0, p.darkness));
 
-  // 3) blend towards a neutral, darker pupil. Fully neutral gray (no G/B tint
-  //    kept) so the pupil never turns greenish or teal next to warm skin.
-  const darkK = 1 - 0.9 * p.darkness;
   for (let y = 0; y < b.h; y++) {
     for (let x = 0; x < b.w; x++) {
+      const k = y * b.w + x;
       const i = ((b.y0 + y) * width + b.x0 + x) * 4;
       const r = src.data[i];
       const g = src.data[i + 1];
       const bl = src.data[i + 2];
-      const w = Math.min(1, m[y * b.w + x] * 1.25) * p.strength;
+      const d = dist[k];
+      const w = d >= 1 ? 0 : (feather > 0 ? 1 - smoothstep(1 - feather, 1, d) : 1) * p.strength;
       if (w <= 0.001) {
         if (src !== dst) {
           dst.data[i] = r;
@@ -79,10 +88,12 @@ export function correctRegion(src: RGBAImage, dst: RGBAImage, region: EyeRegion)
         }
         continue;
       }
-      const v = (g + bl) * 0.5 * darkK;
-      dst.data[i] = r + (v - r) * w;
-      dst.data[i + 1] = g + (v - g) * w;
-      dst.data[i + 2] = bl + (v - bl) * w;
+      // Catchlights are darkened much less, so they stay but don't glare.
+      const highlight = smoothstep(hl0, hl1, lum[k]);
+      const target = lum[k] * (1 - dark * (1 - 0.65 * highlight));
+      dst.data[i] = r + (target - r) * w;
+      dst.data[i + 1] = g + (target - g) * w;
+      dst.data[i + 2] = bl + (target - bl) * w;
       dst.data[i + 3] = src.data[i + 3];
     }
   }

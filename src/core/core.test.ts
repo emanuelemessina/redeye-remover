@@ -29,19 +29,34 @@ describe('correction', () => {
     const img = solid(40, 40, [180, 40, 40]);
     const out = correctAll(img, [region(20, 20, 10)]);
     const [r, g, b] = px(out, 20, 20);
-    expect(Math.abs(r - g)).toBeLessThan(6);
-    expect(Math.abs(g - b)).toBeLessThan(6);
-    expect(r).toBeLessThan(60);
+    expect(Math.abs(r - g)).toBeLessThan(3);
+    expect(Math.abs(g - b)).toBeLessThan(3);
+    expect(r).toBeLessThan(40);
+  });
+  it('also corrects dull brownish pupils (darkness always has an effect)', () => {
+    const img = solid(40, 40, [90, 60, 45]);
+    const a = region(20, 20, 10);
+    const b = region(20, 20, 10);
+    a.params.darkness = 0.2;
+    b.params.darkness = 0.9;
+    const pa = px(correctAll(img, [a]), 20, 20);
+    const pb = px(correctAll(img, [b]), 20, 20);
+    expect(pa[0]).toBeLessThan(60);
+    expect(pb[0]).toBeLessThan(pa[0] - 20);
+  });
+  it('keeps a bright catchlight bright', () => {
+    const img = solid(41, 41, [120, 40, 40]);
+    img.data.set([240, 230, 230, 255], (20 * 41 + 20) * 4);
+    const r = region(20, 20, 10);
+    r.params.darkness = 1;
+    const out = correctAll(img, [r]);
+    expect(px(out, 20, 20)[1]).toBeGreaterThan(140);
+    expect(px(out, 15, 20)[0]).toBeLessThan(10);
   });
   it('leaves pixels outside the region untouched', () => {
     const img = solid(40, 40, [180, 40, 40]);
     const out = correctAll(img, [region(20, 20, 5)]);
     expect(px(out, 2, 2)).toEqual([180, 40, 40]);
-  });
-  it('does not touch skin-coloured pixels even inside the region', () => {
-    const img = solid(40, 40, [200, 140, 105]);
-    const out = correctAll(img, [region(20, 20, 10)]);
-    expect(px(out, 20, 20)).toEqual([200, 140, 105]);
   });
   it('strength 0 is a no-op', () => {
     const img = solid(20, 20, [180, 40, 40]);

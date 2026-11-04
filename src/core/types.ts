@@ -7,21 +7,18 @@ export interface RGBAImage {
 
 /** User-facing correction controls, all in 0..1. */
 export interface CorrectionParams {
-  /** How strongly the red is removed (0 = off, 1 = full). */
+  /** Overall amount of the correction (0 = off, 1 = full). */
   strength: number;
-  /** How dark the corrected pupil becomes. */
+  /** 0 = only remove the colour, 1 = black pupil. */
   darkness: number;
   /** Softness of the region edge. */
   feather: number;
-  /** Higher = also catches duller / less saturated red. */
-  sensitivity: number;
 }
 
 export const DEFAULT_PARAMS: CorrectionParams = {
   strength: 1,
-  darkness: 0.55,
-  feather: 0.35,
-  sensitivity: 0.55,
+  darkness: 0.6,
+  feather: 0.4,
 };
 
 /** An eye region: a (possibly rotated) ellipse in image pixel coordinates. */
@@ -37,14 +34,6 @@ export interface EyeRegion {
   source: 'auto' | 'manual';
   /** 0..1, only meaningful for auto detections. */
   confidence?: number;
-}
-
-/** Correction threshold implied by `sensitivity` (shared by correction + auto-tuning). */
-export function sensitivityToThreshold(sensitivity: number): number {
-  return 0.42 - 0.34 * sensitivity;
-}
-export function thresholdToSensitivity(t0: number): number {
-  return Math.min(1, Math.max(0, (0.42 - t0) / 0.34));
 }
 
 let idCounter = 0;

@@ -2,7 +2,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import { correctedPatch } from '../core/correct';
   import { detectRedEyes } from '../core/detect';
-  import { regionFromTap, autoSensitivity, type KnownIris } from '../core/manual';
+  import { regionFromTap, type KnownIris } from '../core/manual';
   import { DEFAULT_PARAMS, type CorrectionParams, type EyeRegion } from '../core/types';
   import { t } from '../lib/i18n';
   import { displayScale, type Photo } from '../lib/photo';
@@ -23,7 +23,6 @@
   let confirmClose = $state(false);
   let busy: string | null = $state(null);
   let dirty = $state(false);
-  let showMore = $state(false);
 
   const selected = $derived(regions.find((r) => r.id === selectedId) ?? null);
   // The editor is re-created for every photo ({#key}), so reading props once is fine.
@@ -185,13 +184,19 @@
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
   const toImage = (p: { x: number; y: number }) => ({ x: (p.x - tx) / scale, y: (p.y - ty) / scale });
-  const handleOf = (r: EyeRegion) => ({ x: r.cx + r.rx * Math.SQRT1_2, y: r.cy + r.ry * Math.SQRT1_2 });
+  // The resize handle sits a fixed number of screen pixels outside the ring
+  // (bottom-right), so it never overlaps the circle, even on tiny eyes.
+  const HANDLE_GAP = 14;
+  const handleOf = (r: EyeRegion) => {
+    const d = r.rx + HANDLE_GAP / scale;
+    return { x: r.cx + d * Math.SQRT1_2, y: r.cy + d * Math.SQRT1_2 };
+  };
 
   function hitTest(p: { x: number; y: number }): { kind: 'handle' | 'body'; id: string } | null {
-    const slop = 16 / scale;
+    const slop = 10 / scale;
     if (selected) {
       const h = handleOf(selected);
-      if (Math.hypot(p.x - h.x, p.y - h.y) < 22 / scale) return { kind: 'handle', id: selected.id };
+      if (Math.hypot(p.x - h.x, p.y - h.y) < 13 / scale) return { kind: 'handle', id: selected.id };
     }
     let best: EyeRegion | null = null;
     let bestD = Infinity;
@@ -274,8 +279,8 @@
       const r = regions.find((x) => x.id === g.id);
       if (r) {
         const ip = toImage(p);
-        // The handle sits on the ring, so its distance from the center is the radius.
-        const rad = Math.min(minDim * 0.2, Math.max(1, Math.hypot(ip.x - r.cx, ip.y - r.cy)));
+        // Radius follows the handle (which sits HANDLE_GAP screen px outside the ring).
+        const rad = Math.min(minDim * 0.2, Math.max(1, Math.hypot(ip.x - r.cx, ip.y - r.cy) - HANDLE_GAP / scale));
         r.rx = r.ry = rad;
         scheduleRender();
       }
@@ -343,7 +348,7 @@
   function resetSelected() {
     if (!selected) return;
     snapshot();
-    selected.params = { ...DEFAULT_PARAMS, sensitivity: autoSensitivity(photo.rgba, selected.cx, selected.cy, selected.rx) };
+    selected.params = { ...DEFAULT_PARAMS };
     scheduleRender();
   }
 
@@ -432,7 +437,7 @@
             <ellipse cx={r.cx} cy={r.cy} rx={r.rx + gap} ry={r.ry + gap} fill="none" stroke={sel ? '#fff' : 'rgba(255,255,255,0.8)'} stroke-width={ringW * (sel ? 1.4 : 0.7)} />
             {#if sel}
               {@const h = handleOf(r)}
-              <circle cx={h.x + gap * Math.SQRT1_2} cy={h.y + gap * Math.SQRT1_2} r={8 / scale} fill="#fff" stroke="rgba(0,0,0,0.6)" stroke-width={ringW} />
+              <circle cx={h.x} cy={h.y} r={8 / scale} fill="#fff" stroke="rgba(0,0,0,0.6)" stroke-width={ringW} />
             {/if}
           {/each}
         </svg>
@@ -476,17 +481,12 @@
         <label><span>{t.strength}</span>
           <input type="range" min="0" max="1" step="0.01" value={selected.params.strength} oninput={(e) => setParam('strength', +e.currentTarget.value)} />
         </label>
-        {#if showMore}
-          <label><span>{t.feather}</span>
-            <input type="range" min="0" max="0.95" step="0.01" value={selected.params.feather} oninput={(e) => setParam('feather', +e.currentTarget.value)} />
-          </label>
-          <label><span>{t.sensitivity}</span>
-            <input type="range" min="0" max="1" step="0.01" value={selected.params.sensitivity} oninput={(e) => setParam('sensitivity', +e.currentTarget.value)} />
-          </label>
-        {/if}
+        <label><span>{t.feather}</span>
+          <input type="range" min="0" max="0.95" step="0.01" value={selected.params.feather} oninput={(e) => setParam('feather', +e.currentTarget.value)} />
+        </label>
       </div>
       <div class="panel-foot">
-        <button class="text" onclick={() => (showMore = !showMore)}>{showMore ? t.less : t.more}</button>
+        <span></span>
         <button class="text" onclick={resetSelected}>{t.resetEye}</button>
       </div>
     {:else}

@@ -5,8 +5,7 @@
 import { scanFaces, type DetectedFace, type ScanOptions } from './faces';
 import { irisesFor, type Iris } from './landmarks';
 import { pupilFromIris } from './pupil';
-import { refineAt } from './refine';
-import { DEFAULT_PARAMS, newId, type EyeRegion, type RGBAImage } from './types';
+import type { EyeRegion, RGBAImage } from './types';
 
 export interface DetectOptions extends ScanOptions {
   /** Faces scoring at least this are trusted without further evidence. */
@@ -29,27 +28,6 @@ export interface DetectResult {
   faces: DetectedFace[];
   /** Every eye that was examined (for debugging / UI hints). */
   eyes: DetectedEyeInfo[];
-}
-
-/** Fallback when no iris landmarks: search for a red blob near a rough eye point. */
-export function eyeRegionNearPoint(img: RGBAImage, x: number, y: number, eyeDist: number): EyeRegion | null {
-  const fit = refineAt(img, x, y, eyeDist * 0.2, { maxRadius: eyeDist * 0.1, minRedness: 0.12 });
-  if (!fit) return null;
-  const contrast = fit.redness - fit.ringRedness;
-  if (contrast < 0.08) return null;
-  if (Math.hypot(fit.cx - x, fit.cy - y) > eyeDist * 0.16) return null;
-  const rad = Math.min(eyeDist * 0.09, Math.max(eyeDist * 0.045, Math.sqrt(fit.rx * fit.ry)));
-  return {
-    id: newId(),
-    cx: fit.cx,
-    cy: fit.cy,
-    rx: rad,
-    ry: rad,
-    angle: 0,
-    params: { ...DEFAULT_PARAMS },
-    source: 'auto',
-    confidence: Math.min(1, contrast / 0.25) * 0.8,
-  };
 }
 
 export async function detectRedEyes(
@@ -75,14 +53,20 @@ export async function detectRedEyes(
     }
     const found: (EyeRegion | null)[] = [];
     if (irises) {
-      for (const iris of irises) {
-        const res = iris.openness >= 0.2 ? pupilFromIris(img, iris.x, iris.y, iris.r) : null;
-        found.push(res?.region ?? null);
+      const res = irises.map((iris) => (iris.openness >= 0.25 ? pupilFromIris(img, iris.x, iris.y, iris.r) : null));
+      // Red-eye almost always hits both eyes. A pupil that is only "warm" (dull
+      // brownish, same hue as a brown iris) counts only if the other eye is
+      // clearly red, or if it is very warm on its own.
+      const anyRed = res.some((r) => r?.isRed);
+      irises.forEach((iris, k) => {
+        let r = res[k];
+        if (r && !r.isRed && !anyRed && r.warm < 35) r = null;
+        found.push(r?.region ?? null);
         eyes.push({
           face: fi, x: iris.x, y: iris.y, irisR: iris.r, openness: iris.openness,
-          red: res?.red ?? 0, surround: res?.surround ?? 0, region: res?.region ?? null,
+          red: r?.red ?? 0, surround: r?.surround ?? 0, region: r?.region ?? null,
         });
-      }
+      });
     } else {
       // No landmarks: the "face" is usually a false detection (e.g. a mouth seen
       // sideways), so skip it. The user can still tap an eye manually.
