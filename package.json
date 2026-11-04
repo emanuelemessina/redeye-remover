@@ -1,6 +1,6 @@
 {
   "name": "redeye-remover",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Simple red-eye remover: web, desktop and phone (PWA)",
   "scripts": {
     "postinstall": "node scripts/copy-mediapipe.mjs",

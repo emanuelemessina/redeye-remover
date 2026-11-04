@@ -35,13 +35,19 @@ export async function detectRedEyes(
   source: CanvasImageSource,
   opts: DetectOptions = {},
 ): Promise<DetectResult> {
-  const faces = await scanFaces(source, img.width, img.height, { minScore: 0.6, ...opts });
+  const faces = await scanFaces(source, img.width, img.height, {
+    minScore: 0.6,
+    ...opts,
+    // Face scan = first 85% of the progress bar, iris landmarks = the rest.
+    onProgress: (p) => opts.onProgress?.(p * 0.85),
+  });
   const trusted = opts.trustedFaceScore ?? 0.78;
   const regions: EyeRegion[] = [];
   const eyes: DetectedEyeInfo[] = [];
 
   for (let fi = 0; fi < faces.length; fi++) {
     if (opts.signal?.aborted) break;
+    opts.onProgress?.(0.85 + (0.15 * fi) / Math.max(1, faces.length));
     const f = faces[fi];
     const ed = Math.hypot(f.eyes[0].x - f.eyes[1].x, f.eyes[0].y - f.eyes[1].y);
     if (ed < 4) continue;

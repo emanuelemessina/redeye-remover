@@ -267,6 +267,8 @@
     if (phase !== 'ready') return;
     // Buttons floating over the photo (e.g. "Fit") are not taps on the photo.
     if ((e.target as Element).closest('button')) return;
+    // Only the primary button / a finger edits; right or middle click does nothing.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     viewport.setPointerCapture(e.pointerId);
     const p = local(e);
     pointers.set(e.pointerId, p);
@@ -602,6 +604,7 @@
     {onpointermove}
     {onpointerup}
     onpointercancel={onpointerup}
+    oncontextmenu={(e) => e.preventDefault()}
     {onwheel}
   >
     <canvas class="view" bind:this={view}></canvas>

@@ -115,25 +115,30 @@ export async function scanFaces(
   const minScore = opts.minScore ?? 0.6;
   const levels = tileLevels(width, height, opts.coarseFracs ?? [0.55], opts.fineFracs ?? [0.3]);
   const votes = [0, 0, 0, 0];
-  let total = levels.reduce((a, l) => a + l.tiles.length * (l.allRotations ? 4 : 1), 0);
-  let done = 0;
+  // Progress: each level gets a fixed share of the bar (by its tile count), so the
+  // bar never jumps back when the fine level learns how many rotations it needs.
+  const weights = levels.map((l) => l.tiles.length * (l.allRotations ? 4 : 1));
+  const weightSum = weights.reduce((a, b) => a + b, 0);
+  let doneWeight = 0;
   let faces: DetectedFace[] = [];
   const canvas = makeCanvas(tileInput, tileInput);
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-  for (const level of levels) {
+  for (let li = 0; li < levels.length; li++) {
+    const level = levels[li];
     let rotations = [0, 1, 2, 3];
     if (!level.allRotations) {
       const best = Math.max(...votes);
       rotations = best > 0 ? rotations.filter((k) => votes[k] >= best * 0.4) : rotations;
-      total += level.tiles.length * (rotations.length - 1);
     }
+    const levelSteps = level.tiles.length * rotations.length;
+    let levelDone = 0;
     for (const tile of level.tiles) {
       const scale = Math.min(1, tileInput / Math.max(tile.w, tile.h));
       const sw = Math.max(1, Math.round(tile.w * scale));
       const sh = Math.max(1, Math.round(tile.h * scale));
       for (const k of rotations) {
-        done++;
+        levelDone++;
         const cw = k % 2 ? sh : sw;
         const ch = k % 2 ? sw : sh;
         canvas.width = cw;
@@ -182,12 +187,13 @@ export async function scanFaces(
             via: `${level.label}/r${k * 90}`,
           });
         }
-        opts.onProgress?.(done / total);
+        opts.onProgress?.((doneWeight + (weights[li] * levelDone) / levelSteps) / weightSum);
       }
       // Yield so the UI stays responsive.
       await new Promise((r) => setTimeout(r, 0));
       if (opts.signal?.aborted) return faces;
     }
+    doneWeight += weights[li];
   }
   return faces;
 }
