@@ -5,6 +5,8 @@
   import { regionFromTap, type KnownIris } from '../core/manual';
   import { DEFAULT_PARAMS, EYE_COLORS, type CorrectionParams, type EyeColor, type EyeRegion } from '../core/types';
   import { t } from '../lib/i18n';
+  import Icon, { type IconName } from './Icon.svelte';
+  import TipLabel from './TipLabel.svelte';
   import { displayScale, type Photo } from '../lib/photo';
   import { canSaveInPlace, renderFile, saveCopy, saveInPlace, shareFile } from '../lib/save';
 
@@ -17,7 +19,9 @@
   let irises: KnownIris[] = [];
   let phase: 'detecting' | 'ready' = $state('detecting');
   let progress = $state(0);
-  let comparing = $state(false);
+  // Hold-to-peek: 'original' = photo before the fix, 'clean' = result without markers.
+  let peek: null | 'original' | 'clean' = $state(null);
+  const comparing = $derived(peek === 'original');
   let toast: string | null = $state(null);
   let saveSheet = $state(false);
   let confirmClose = $state(false);
@@ -261,6 +265,8 @@
 
   function onpointerdown(e: PointerEvent) {
     if (phase !== 'ready') return;
+    // Buttons floating over the photo (e.g. "Fit") are not taps on the photo.
+    if ((e.target as Element).closest('button')) return;
     viewport.setPointerCapture(e.pointerId);
     const p = local(e);
     pointers.set(e.pointerId, p);
@@ -380,6 +386,25 @@
     selected.params[k] = v;
     scheduleRender();
   }
+  // One fixed list so the controls never move around.
+  type SliderKey = NumParam | 'size';
+  const sliderDefs: { key: Exclude<SliderKey, 'colorAmount'>; icon: IconName; min: number; max: number; step: number }[] = [
+    { key: 'size', icon: 'size', min: 0, max: 1, step: 0.001 },
+    { key: 'pupil', icon: 'pupil', min: 0.2, max: 1, step: 0.01 },
+    { key: 'darkness', icon: 'darkness', min: 0, max: 1, step: 0.01 },
+    { key: 'shine', icon: 'shine', min: 0, max: 1, step: 0.01 },
+    { key: 'feather', icon: 'feather', min: 0, max: 0.95, step: 0.01 },
+    { key: 'strength', icon: 'strength', min: 0, max: 1, step: 0.01 },
+  ];
+  function sliderValue(key: SliderKey): number {
+    if (!selected) return 0;
+    return key === 'size' ? sizeToSlider(selected.rx) : selected.params[key];
+  }
+  function sliderInput(key: SliderKey, v: number) {
+    if (key === 'size') setSize(v);
+    else setParam(key, v);
+  }
+
   // Starting settings of each eye, for "Reset".
   const initial = new Map<string, { params: CorrectionParams; rx: number; ry: number }>();
   function remember(list: EyeRegion[]) {
@@ -435,14 +460,32 @@
   }
 
   // ---- compare ----
-  function startCompare() {
-    comparing = true;
+  function setPeek(m: null | 'original' | 'clean') {
+    if (m === peek) return;
+    peek = m;
     drawView();
   }
-  function endCompare() {
-    if (!comparing) return;
-    comparing = false;
-    drawView();
+  // Which half of the control is under the pointer.
+  function peekSide(e: PointerEvent): 'original' | 'clean' {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return e.clientX < r.left + r.width / 2 ? 'original' : 'clean';
+  }
+  function peekDown(e: PointerEvent) {
+    if (phase !== 'ready') return;
+    e.preventDefault();
+    // Capture so sliding outside the control keeps working until release.
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is a nicety; peeking still works without it */
+    }
+    setPeek(peekSide(e));
+  }
+  function peekMove(e: PointerEvent) {
+    if (peek) setPeek(peekSide(e));
+  }
+  function peekUp() {
+    setPeek(null);
   }
 
   // ---- save / close ----
@@ -511,6 +554,37 @@
 
 <svelte:window {onkeydown} />
 
+{#snippet peekControl(compact: boolean)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="peek"
+    class:compact
+    class:pressed={!!peek}
+    class:disabled={phase !== 'ready'}
+    title={t.peekTip.simple}
+    onpointerdown={peekDown}
+    onpointermove={peekMove}
+    onpointerup={peekUp}
+    onpointercancel={peekUp}
+    onlostpointercapture={peekUp}
+    oncontextmenu={(e) => e.preventDefault()}
+  >
+    <span class="thumb" class:left={peek === 'original'} class:right={peek === 'clean'}></span>
+    <span class="seg" class:on={peek === 'original'}>
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      {t.peekOriginal}
+    </span>
+    <span class="grip" aria-hidden="true">
+      <Icon name="swap" size={16} />
+      {#if !compact}<small>{t.peekHint}</small>{/if}
+    </span>
+    <span class="seg" class:on={peek === 'clean'}>
+      {t.peekResult}
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+  </div>
+{/snippet}
+
 <div class="editor">
   <header class="bar">
     <button class="text" onclick={onClose}>‹ {t.close}</button>
@@ -532,7 +606,7 @@
   >
     <canvas class="view" bind:this={view}></canvas>
     <div class="stage" style="width:{W}px;height:{H}px;transform:translate({tx}px,{ty}px) scale({scale})">
-      {#if phase === 'ready' && !comparing}
+      {#if phase === 'ready' && !peek}
         <svg viewBox="0 0 {W} {H}" width={W} height={H}>
           {#each regions as r (r.id)}
             {@const sel = r.id === selectedId}
@@ -566,7 +640,9 @@
       </div>
     {/if}
 
-    {#if toast}
+    {#if peek}
+      <div class="peek-label" class:orig={peek === 'original'}>{peek === 'original' ? t.peekOriginal : t.peekResult}</div>
+    {:else if toast}
       <div class="toast" role="status">{toast}</div>
     {/if}
   </div>
@@ -579,9 +655,9 @@
         <button class="text strong" onclick={() => (selectedId = null)}>{t.done}</button>
       </div>
       <div class="scroll">
-        <div class="colors" role="radiogroup" aria-label={t.eyeColor}>
-          <span class="colors-label">{t.eyeColor}: <b>{t.colors[selected.params.eyeColor]}</b></span>
-          <div class="chips">
+        <div class="colors">
+          <TipLabel icon="eyeColor" label="{t.eyeColor}: {t.colors[selected.params.eyeColor]}" tip={t.tips.eyeColor} />
+          <div class="chips" role="radiogroup" aria-label={t.eyeColor}>
             {#each colorChoices as c (c.id)}
               <button
                 class="chip"
@@ -597,33 +673,38 @@
           </div>
         </div>
         <div class="sliders" onpointerdown={snapshot} role="group">
-          {#if selected.params.eyeColor !== 'natural'}
-            <label><span>{t.colorAmount}</span>
-              <input type="range" min="0" max="1" step="0.01" value={selected.params.colorAmount} oninput={(e) => setParam('colorAmount', +e.currentTarget.value)} />
-            </label>
-          {/if}
-          <label><span>{t.size}</span>
-            <input type="range" min="0" max="1" step="0.001" value={sizeToSlider(selected.rx)} oninput={(e) => setSize(+e.currentTarget.value)} />
-          </label>
-          <label><span>{t.pupil}</span>
-            <input type="range" min="0.2" max="1" step="0.01" value={selected.params.pupil} oninput={(e) => setParam('pupil', +e.currentTarget.value)} />
-          </label>
-          <label><span>{t.darkness}</span>
-            <input type="range" min="0" max="1" step="0.01" value={selected.params.darkness} oninput={(e) => setParam('darkness', +e.currentTarget.value)} />
-          </label>
-          <label><span>{t.shine}</span>
-            <input type="range" min="0" max="1" step="0.01" value={selected.params.shine} oninput={(e) => setParam('shine', +e.currentTarget.value)} />
-          </label>
-          <label><span>{t.feather}</span>
-            <input type="range" min="0" max="0.95" step="0.01" value={selected.params.feather} oninput={(e) => setParam('feather', +e.currentTarget.value)} />
-          </label>
-          <label><span>{t.strength}</span>
-            <input type="range" min="0" max="1" step="0.01" value={selected.params.strength} oninput={(e) => setParam('strength', +e.currentTarget.value)} />
-          </label>
+          <!-- Always present (disabled for "Original") so nothing shifts when a colour is picked. -->
+          <div class="row wide" class:disabled={selected.params.eyeColor === 'natural'}>
+            <TipLabel icon="colorAmount" label={t.colorAmount} tip={t.tips.colorAmount} />
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              aria-label={t.colorAmount}
+              disabled={selected.params.eyeColor === 'natural'}
+              value={selected.params.colorAmount}
+              oninput={(e) => setParam('colorAmount', +e.currentTarget.value)}
+            />
+          </div>
+          {#each sliderDefs as d (d.key)}
+            <div class="row">
+              <TipLabel icon={d.icon} label={t[d.key]} tip={t.tips[d.key]} />
+              <input
+                type="range"
+                min={d.min}
+                max={d.max}
+                step={d.step}
+                aria-label={t[d.key]}
+                value={sliderValue(d.key)}
+                oninput={(e) => sliderInput(d.key, +e.currentTarget.value)}
+              />
+            </div>
+          {/each}
         </div>
       </div>
       <div class="panel-foot">
-        <span></span>
+        {@render peekControl(true)}
         <button class="text" onclick={resetSelected}>{t.resetEye}</button>
       </div>
     {:else}
@@ -633,17 +714,7 @@
           <svg viewBox="0 0 24 24" width="22" height="22"><path d="M9 7H4V2M4.5 7.5A8 8 0 1 1 4 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>{t.undo}</span>
         </button>
-        <button
-          class="compare"
-          disabled={phase !== 'ready' || !regions.length}
-          onpointerdown={startCompare}
-          onpointerup={endCompare}
-          onpointerleave={endCompare}
-          onpointercancel={endCompare}
-          oncontextmenu={(e) => e.preventDefault()}
-        >
-          {t.compare}
-        </button>
+        {@render peekControl(false)}
       </div>
     {/if}
   </footer>
@@ -843,18 +914,101 @@
     color: var(--fg);
     font-size: 12px;
   }
-  .compare {
+  .peek {
+    position: relative;
     flex: 1;
-    height: 50px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    height: 52px;
     border-radius: 14px;
     background: var(--btn);
     color: var(--fg);
     font-size: 16px;
-    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
     -webkit-touch-callout: none;
+    touch-action: none;
+    cursor: ew-resize;
+    overflow: hidden;
   }
-  .compare:active {
-    background: var(--btn-active);
+  .peek.compact {
+    flex: 0 1 300px;
+    height: 40px;
+    font-size: 14px;
+  }
+  .peek.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  .peek .seg {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 100%;
+    color: var(--muted);
+    transition: color 0.12s;
+  }
+  .peek .seg.on {
+    color: #fff;
+    font-weight: 600;
+  }
+  .peek .grip {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--muted);
+    line-height: 1;
+  }
+  .peek .grip small {
+    margin-top: 3px;
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+  .peek.pressed .grip {
+    opacity: 0;
+  }
+  /* Highlight that slides under the half being shown. */
+  .peek .thumb {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 4px;
+    width: calc(50% - 4px);
+    border-radius: 10px;
+    background: var(--accent);
+    opacity: 0;
+    transform: translateX(0);
+    transition: transform 0.15s ease, opacity 0.12s;
+  }
+  .peek .thumb.left {
+    opacity: 1;
+  }
+  .peek .thumb.right {
+    opacity: 1;
+    transform: translateX(100%);
+  }
+  .peek-label {
+    position: absolute;
+    left: 50%;
+    top: 14px;
+    transform: translateX(-50%);
+    padding: 7px 16px;
+    border-radius: 18px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    pointer-events: none;
+  }
+  .peek-label.orig {
+    background: rgba(20, 20, 20, 0.85);
   }
   .panel-head,
   .panel-foot {
@@ -869,6 +1023,7 @@
     max-height: 40vh;
     overflow-y: auto;
     overflow-x: hidden;
+    padding-right: 10px;
     overscroll-behavior: contain;
   }
   .colors {
@@ -878,14 +1033,6 @@
     justify-content: space-between;
     gap: 8px;
     margin: 6px 0 4px;
-  }
-  .colors-label {
-    color: var(--muted);
-    font-size: 15px;
-  }
-  .colors-label b {
-    color: var(--fg);
-    font-weight: 600;
   }
   .chips {
     display: flex;
@@ -910,16 +1057,15 @@
     gap: 6px;
     margin: 6px 0;
   }
-  .sliders label {
+  .sliders .row {
     display: grid;
-    grid-template-columns: 120px 1fr;
+    grid-template-columns: minmax(118px, 40%) 1fr;
     align-items: center;
-    gap: 10px;
-    font-size: 15px;
+    gap: 8px;
     min-height: 40px;
   }
-  .sliders span {
-    color: var(--muted);
+  .sliders .row.disabled {
+    opacity: 0.45;
   }
   input[type='range'] {
     width: 100%;
@@ -989,8 +1135,11 @@
       grid-template-columns: 1fr 1fr;
       column-gap: 28px;
     }
-    .sliders label {
-      grid-template-columns: 96px 1fr;
+    .sliders .row {
+      grid-template-columns: 140px 1fr;
+    }
+    .sliders .row.wide {
+      grid-column: 1 / -1;
     }
   }
   @media (min-width: 900px) {

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { t } from '../lib/i18n';
+  import { LANG_NAMES, langOverride, setLanguage, t, type Lang } from '../lib/i18n';
+  import Icon from './Icon.svelte';
   import { pickWithHandle, supportsFileSystemAccess } from '../lib/photo';
 
   let { onpick }: { onpick: (file: File, handle?: FileSystemFileHandle) => void } = $props();
@@ -62,6 +63,23 @@
   ondragleave={() => (dragging = false)}
   {ondrop}
 >
+  <label class="lang" title={t.language}>
+    <Icon name="globe" size={18} />
+    <span class="sr">{t.language}</span>
+    <select
+      value={langOverride ?? 'auto'}
+      onchange={(e) => {
+        const v = e.currentTarget.value;
+        setLanguage(v === 'auto' ? null : (v as Lang));
+      }}
+    >
+      <option value="auto">{t.langAuto}</option>
+      {#each Object.entries(LANG_NAMES) as [code, name] (code)}
+        <option value={code}>{name}</option>
+      {/each}
+    </select>
+  </label>
+
   <div class="hero">
     <svg class="logo" viewBox="0 0 120 120" aria-hidden="true">
       <path d="M10 60 Q60 10 110 60 Q60 110 10 60Z" fill="#fff" stroke="#222" stroke-width="5" />
@@ -88,6 +106,7 @@
 
 <style>
   .home {
+    position: relative;
     min-height: 100dvh;
     display: flex;
     flex-direction: column;
@@ -129,6 +148,36 @@
   }
   .choose:active {
     transform: scale(0.98);
+  }
+  .lang {
+    position: absolute;
+    top: calc(env(safe-area-inset-top) + 12px);
+    right: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 18px;
+    background: var(--btn);
+    color: var(--fg);
+    font-size: 15px;
+  }
+  .lang select {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .lang select option {
+    color: #18181b;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
   .version {
     margin: 0;

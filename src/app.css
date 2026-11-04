@@ -10,6 +10,8 @@
   --btn: #2f2f34;
   --btn-active: #45454c;
   --track: #3f3f46;
+  --tip-bg: #f4f4f5;
+  --tip-fg: #18181b;
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   -webkit-text-size-adjust: 100%;
@@ -26,6 +28,8 @@
     --btn: #ececee;
     --btn-active: #d8d8dc;
     --track: #dcdce0;
+    --tip-bg: #26262b;
+    --tip-fg: #f4f4f5;
     color-scheme: light;
   }
 }
